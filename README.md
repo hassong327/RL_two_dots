@@ -14,7 +14,7 @@
 ## 설치
 
 ```bash
-cd /home/hassong327/sim/RL_two_dots
+cd /home/RL_two_dots
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
