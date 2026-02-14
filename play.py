@@ -1,11 +1,10 @@
 import argparse
 import random
-import re
 import time
 from collections import deque
-from pathlib import Path
 
-import matplotlib.pyplot as plt
+import cv2
+import mediapipe as mp
 import numpy as np
 import pygame
 import torch
@@ -14,33 +13,7 @@ import torch.nn.functional as F
 
 from env import CursorAvoidEnv, GameConfig
 
-
-def _next_plot_path() -> Path:
-    pattern = re.compile(r"^plot(\d+)\.png$")
-    max_idx = 0
-    for file in Path.cwd().iterdir():
-        if not file.is_file():
-            continue
-        m = pattern.match(file.name)
-        if m:
-            max_idx = max(max_idx, int(m.group(1)))
-    return Path.cwd() / f"plot{max_idx + 1}.png"
-
-
-def _save_life_time_plot(life_times_sec):
-    path = _next_plot_path()
-    x = np.arange(1, len(life_times_sec) + 1)
-    plt.figure(figsize=(10, 4.8))
-    plt.plot(x, life_times_sec, marker="o", linewidth=2)
-    plt.title("Survival Time Per Life")
-    plt.xlabel("Life Index")
-    plt.ylabel("Survival Time (seconds)")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(path, dpi=140)
-    plt.close()
-    print(f"Saved plot: {path}")
-    return path
+HAND_WINDOW_NAME = "Right Index Tracker"
 
 
 def run_human_mode():
@@ -50,9 +23,6 @@ def run_human_mode():
         use_mouse_cursor=False,
     )
     obs, _ = env.reset()
-    life_times_sec = []
-    life_start = time.perf_counter()
-    prev_deaths = 0
     done = False
     while not done:
         action = 0
@@ -71,18 +41,9 @@ def run_human_mode():
                 done = True
 
         obs, reward, terminated, truncated, info = env.step(action)
-        if info["deaths"] > prev_deaths:
-            now = time.perf_counter()
-            life_times_sec.append(now - life_start)
-            life_start = now
-            prev_deaths = info["deaths"]
         done = done or terminated or truncated
 
-    tail = time.perf_counter() - life_start
-    if tail > 0.02:
-        life_times_sec.append(tail)
     env.close()
-    _save_life_time_plot(life_times_sec)
 
 
 class QNetwork(nn.Module):
@@ -175,56 +136,191 @@ class OnlineDQNAgent:
             self.target_net.load_state_dict(self.online_net.state_dict())
 
 
-def run_online_rl_mode(train_updates_per_step: int = 6):
+class RightIndexTracker:
+    def __init__(
+        self,
+        camera: int = 0,
+        width: int = 1280,
+        height: int = 720,
+        fps: int = 60,
+        mirror: bool = True,
+        show_preview: bool = True,
+    ):
+        if not hasattr(mp, "solutions"):
+            raise RuntimeError(
+                "This mediapipe build has no mp.solutions. "
+                "Use Python 3.11 + mediapipe==0.10.21."
+            )
+        self.mirror = mirror
+        self.show_preview = show_preview
+        self.cap = cv2.VideoCapture(camera, cv2.CAP_V4L2)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Cannot open camera index {camera}")
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, fps)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
+        mp_hands = mp.solutions.hands
+        self._mp_draw = mp.solutions.drawing_utils
+        self._mp_hands = mp_hands
+        self._hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.5,
+        )
+        if self.show_preview:
+            cv2.namedWindow(HAND_WINDOW_NAME, cv2.WINDOW_NORMAL)
+
+    def read_right_index(self):
+        ok, frame = self.cap.read()
+        if not ok:
+            return None, False, True
+
+        if self.mirror:
+            frame = cv2.flip(frame, 1)
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        res = self._hands.process(rgb)
+        right_tip = None
+        preview_alive = True
+
+        if res.multi_hand_landmarks:
+            right_idx = None
+            if res.multi_handedness:
+                for i, handed in enumerate(res.multi_handedness):
+                    label = handed.classification[0].label
+                    if label == "Right":
+                        right_idx = i
+                        break
+            if right_idx is None:
+                right_idx = 0
+
+            lm = res.multi_hand_landmarks[right_idx]
+            self._mp_draw.draw_landmarks(
+                frame,
+                lm,
+                self._mp_hands.HAND_CONNECTIONS,
+            )
+            tip = lm.landmark[8]
+            right_tip = (float(tip.x), float(tip.y), float(tip.z))
+
+        if self.show_preview:
+            if cv2.getWindowProperty(HAND_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                preview_alive = False
+            else:
+                text = "Right index: not found"
+                if right_tip is not None:
+                    text = (
+                        f"Right index norm=({right_tip[0]:.3f}, "
+                        f"{right_tip[1]:.3f}, {right_tip[2]:.3f})"
+                    )
+                cv2.putText(
+                    frame,
+                    text,
+                    (18, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
+                cv2.imshow(HAND_WINDOW_NAME, frame)
+                if cv2.waitKey(1) & 0xFF == 27:
+                    preview_alive = False
+
+        return right_tip, preview_alive, False
+
+    def close(self):
+        self._hands.close()
+        self.cap.release()
+        if self.show_preview:
+            cv2.destroyWindow(HAND_WINDOW_NAME)
+
+
+def run_online_rl_mode(
+    train_updates_per_step: int = 6,
+    camera: int = 0,
+    cam_width: int = 1280,
+    cam_height: int = 720,
+    cam_fps: int = 60,
+    mirror_camera: bool = True,
+    show_hand_preview: bool = True,
+):
     env = CursorAvoidEnv(
         config=GameConfig(max_steps=None, max_life=1),
         render_mode="human",
         use_mouse_cursor=False,
+        use_external_cursor=True,
+    )
+    tracker = RightIndexTracker(
+        camera=camera,
+        width=cam_width,
+        height=cam_height,
+        fps=cam_fps,
+        mirror=mirror_camera,
+        show_preview=show_hand_preview,
     )
     obs_dim = int(env.observation_space.shape[0])
     agent = OnlineDQNAgent(obs_dim=obs_dim, n_actions=env.action_space.n, updates_per_step=train_updates_per_step)
     obs, _ = env.reset()
-    life_times_sec = []
-    life_start = time.perf_counter()
-    prev_deaths = 0
     done = False
-    while not done:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+
+    try:
+        while not done:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    done = True
+
+            if done:
+                break
+
+            tip, preview_alive, camera_failed = tracker.read_right_index()
+            if camera_failed:
+                print("Camera frame read failed. Stopping.")
+                break
+            if not preview_alive:
                 done = True
+                break
+            if tip is not None:
+                env.set_cursor_pos(tip[0] * env.cfg.width, tip[1] * env.cfg.height)
 
-        if done:
-            break
-        prev_obs = obs
-        action = agent.act(prev_obs)
-        obs, reward, terminated, truncated, info = env.step(action)
-        if info["deaths"] > prev_deaths:
-            now = time.perf_counter()
-            life_times_sec.append(now - life_start)
-            life_start = now
-            prev_deaths = info["deaths"]
-        transition_done = bool(terminated or truncated)
-        agent.store(prev_obs, action, reward, obs, transition_done)
-        agent.learn()
-        done = done or terminated or truncated
-
-    tail = time.perf_counter() - life_start
-    if tail > 0.02:
-        life_times_sec.append(tail)
-    env.close()
-    _save_life_time_plot(life_times_sec)
+            prev_obs = obs
+            action = agent.act(prev_obs)
+            obs, reward, terminated, truncated, info = env.step(action)
+            transition_done = bool(terminated or truncated)
+            agent.store(prev_obs, action, reward, obs, transition_done)
+            agent.learn()
+            done = done or terminated or truncated
+    finally:
+        tracker.close()
+        env.close()
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["human", "online"], default="online")
     parser.add_argument("--train-updates-per-step", type=int, default=6)
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--cam-width", type=int, default=1280)
+    parser.add_argument("--cam-height", type=int, default=720)
+    parser.add_argument("--cam-fps", type=int, default=60)
+    parser.add_argument("--mirror-camera", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--show-hand-preview", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     if args.mode == "human":
         run_human_mode()
     else:
-        run_online_rl_mode(train_updates_per_step=args.train_updates_per_step)
+        run_online_rl_mode(
+            train_updates_per_step=args.train_updates_per_step,
+            camera=args.camera,
+            cam_width=args.cam_width,
+            cam_height=args.cam_height,
+            cam_fps=args.cam_fps,
+            mirror_camera=args.mirror_camera,
+            show_hand_preview=args.show_hand_preview,
+        )
 
 
 if __name__ == "__main__":

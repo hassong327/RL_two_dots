@@ -1,5 +1,10 @@
-numpy>=1.24
-pygame>=2.5
-gymnasium>=0.29
-torch>=2.2
-matplotlib>=3.8
+# Recommended Python: 3.11
+# (MediaPipe solutions API is unstable/missing on some 3.12 builds)
+
+numpy<2
+protobuf<5
+mediapipe==0.10.21
+opencv-python
+pygame
+gymnasium
+torch

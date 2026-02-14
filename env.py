@@ -35,11 +35,13 @@ class CursorAvoidEnv(gym.Env):
         config: Optional[GameConfig] = None,
         render_mode: Optional[str] = None,
         use_mouse_cursor: bool = False,
+        use_external_cursor: bool = False,
     ):
         super().__init__()
         self.cfg = config or GameConfig()
         self.render_mode = render_mode
         self.use_mouse_cursor = use_mouse_cursor
+        self.use_external_cursor = use_external_cursor
 
         self.action_space = spaces.Discrete(5)
         self.observation_space = spaces.Box(
@@ -78,7 +80,8 @@ class CursorAvoidEnv(gym.Env):
     def step(self, action):
         self.steps += 1
         self._move_player(action)
-        self._update_cursor()
+        if not self.use_external_cursor:
+            self._update_cursor()
 
         reward = 0.04
         hit = self._is_collision()
@@ -103,6 +106,10 @@ class CursorAvoidEnv(gym.Env):
 
         info = {"life": self.life, "deaths": self.deaths}
         return self._obs(), reward, terminated, truncated, info
+
+    def set_cursor_pos(self, x: float, y: float):
+        self.cursor_pos[0] = float(np.clip(x, 0, self.cfg.width))
+        self.cursor_pos[1] = float(np.clip(y, 0, self.cfg.height))
 
     def _obs(self):
         return np.array(
