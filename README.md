@@ -1,18 +1,18 @@
-# Finger-Controlled RL Escape Dots
+# 🎯 Finger-Controlled RL Escape Dots
 
-This project lets you control the red dot with your **right index finger** (camera input), while the blue dot is controlled by an **online-learning DQN agent** that keeps learning to escape in real time.
+This project lets you control the 🔴 red dot with your **right index finger** (camera input), while the 🔵 blue dot is controlled by an **online-learning DQN agent** that keeps learning to escape in real time.
 
-## Features
-- Red dot (cursor): tracked from your right index fingertip using MediaPipe Hands
-- Blue dot (player): controlled by a DQN agent that keeps training every step
-- Real-time interaction: finger control + RL learning at the same time
+## ✨ Features
+- 🔴 Red dot (cursor): tracked from your right index fingertip using MediaPipe Hands
+- 🔵 Blue dot (player): controlled by a DQN agent that keeps training every step
+- ⚡ Real-time interaction: finger control + RL learning at the same time
 
-## Environment
+## 🖥️ Environment
 - OS: Linux (Ubuntu recommended)
 - Python: **3.11 recommended**
   - Some Python 3.12 + mediapipe combinations may not expose `mp.solutions`.
 
-## Installation
+## 📦 Installation
 ```bash
 cd /home/hassong327/sim/tracking
 python3.11 -m venv .venv
@@ -21,7 +21,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-## Run
+## ▶️ Run
 ### Online RL + finger control
 ```bash
 python play.py --mode online --camera 0 --cam-width 1280 --cam-height 720 --cam-fps 60
@@ -32,19 +32,19 @@ python play.py --mode online --camera 0 --cam-width 1280 --cam-height 720 --cam-
 python play.py --mode human
 ```
 
-## Controls
+## 🎮 Controls
 - `online` mode: move your right index finger to control the red dot
 - `human` mode: `WASD` or arrow keys
 - Exit: close the game window or press `ESC` in the hand-tracker preview window
 
-## Main Options
+## ⚙️ Main Options
 - `--camera`: camera index (default `0`)
 - `--cam-width`, `--cam-height`, `--cam-fps`: camera capture settings
 - `--no-mirror-camera`: disable mirrored camera input
 - `--no-show-hand-preview`: disable hand-tracker preview window
 - `--train-updates-per-step`: adjust online learning intensity
 
-## Troubleshooting
+## 🛠️ Troubleshooting
 1. `ModuleNotFoundError: No module named 'torch'`
 ```bash
 source .venv/bin/activate
