@@ -14,10 +14,17 @@
 
 ## 📦 설치 방법
 ```bash
-cd /home/hassong327/sim/tracking
+cd /home/songha/RL_two_dots
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+이미 이 폴더에 가상환경이 있다면 다음처럼 바로 실행할 수 있습니다.
+```bash
+cd /home/songha/RL_two_dots
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
@@ -25,12 +32,12 @@ python -m pip install -r requirements.txt
 
 ### Online RL + 손가락 제어 모드
 ```bash
-python play.py --mode online --camera 0 --cam-width 1280 --cam-height 720 --cam-fps 60
+./.venv/bin/python play.py --mode online --camera 0 --cam-width 1280 --cam-height 720 --cam-fps 60
 ```
 
 ### 수동 키보드 모드 (디버그용)
 ```bash
-python play.py --mode human
+./.venv/bin/python play.py --mode human
 ```
 
 ## 🎮 조작 방법
