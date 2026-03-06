@@ -11,6 +11,22 @@ try:
 except Exception:  # pragma: no cover
     pygame = None
 
+ACTION_STAY = 0
+ACTION_UP = 1
+ACTION_DOWN = 2
+ACTION_LEFT = 3
+ACTION_RIGHT = 4
+
+_ACTION_TO_DELTA = {
+    ACTION_STAY: (0.0, 0.0),
+    ACTION_UP: (0.0, -1.0),
+    ACTION_DOWN: (0.0, 1.0),
+    ACTION_LEFT: (-1.0, 0.0),
+    ACTION_RIGHT: (1.0, 0.0),
+}
+
+_EPS = 1e-7
+
 
 @dataclass
 class GameConfig:
@@ -29,6 +45,9 @@ class GameConfig:
 
 class CursorAvoidEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
+    SURVIVAL_REWARD = 0.04
+    HIT_PENALTY = 1.0
+    DEATH_PENALTY = 4.0
 
     def __init__(
         self,
@@ -83,18 +102,7 @@ class CursorAvoidEnv(gym.Env):
         if not self.use_external_cursor:
             self._update_cursor()
 
-        reward = 0.04
-        hit = self._is_collision()
-        if hit and self.hit_cooldown <= 0:
-            self.life -= 1
-            self.hit_cooldown = self.cfg.hit_cooldown_steps
-            reward -= 1.0
-            if self.life <= 0:
-                self.deaths += 1
-                reward -= 4.0
-                self._respawn()
-        else:
-            self.hit_cooldown = max(0, self.hit_cooldown - 1)
+        reward = self.SURVIVAL_REWARD + self._resolve_collision()
 
         terminated = False
         truncated = False
@@ -108,8 +116,9 @@ class CursorAvoidEnv(gym.Env):
         return self._obs(), reward, terminated, truncated, info
 
     def set_cursor_pos(self, x: float, y: float):
-        self.cursor_pos[0] = float(np.clip(x, 0, self.cfg.width))
-        self.cursor_pos[1] = float(np.clip(y, 0, self.cfg.height))
+        self.cursor_pos[0] = float(x)
+        self.cursor_pos[1] = float(y)
+        self._clip_cursor_pos()
 
     def _obs(self):
         return np.array(
@@ -124,15 +133,9 @@ class CursorAvoidEnv(gym.Env):
         )
 
     def _move_player(self, action: int):
-        dx, dy = 0.0, 0.0
-        if action == 1:
-            dy = -self.cfg.player_speed
-        elif action == 2:
-            dy = self.cfg.player_speed
-        elif action == 3:
-            dx = -self.cfg.player_speed
-        elif action == 4:
-            dx = self.cfg.player_speed
+        dx_unit, dy_unit = _ACTION_TO_DELTA.get(action, (0.0, 0.0))
+        dx = dx_unit * self.cfg.player_speed
+        dy = dy_unit * self.cfg.player_speed
 
         self.player_pos[0] = float(
             np.clip(
@@ -149,6 +152,20 @@ class CursorAvoidEnv(gym.Env):
             )
         )
 
+    def _resolve_collision(self) -> float:
+        if self._is_collision() and self.hit_cooldown <= 0:
+            self.life -= 1
+            self.hit_cooldown = self.cfg.hit_cooldown_steps
+            reward_delta = -self.HIT_PENALTY
+            if self.life <= 0:
+                self.deaths += 1
+                reward_delta -= self.DEATH_PENALTY
+                self._respawn()
+            return reward_delta
+
+        self.hit_cooldown = max(0, self.hit_cooldown - 1)
+        return 0.0
+
     def _update_cursor(self):
         if self.use_mouse_cursor:
             if pygame is None:
@@ -156,19 +173,23 @@ class CursorAvoidEnv(gym.Env):
             if self.window is None:
                 return
             mouse_x, mouse_y = pygame.mouse.get_pos()
-            self.cursor_pos[0] = float(np.clip(mouse_x, 0, self.cfg.width))
-            self.cursor_pos[1] = float(np.clip(mouse_y, 0, self.cfg.height))
+            self.cursor_pos[0] = float(mouse_x)
+            self.cursor_pos[1] = float(mouse_y)
+            self._clip_cursor_pos()
             return
 
         # Non-learning pointer: directly tracks the player position.
         vec = self.player_pos - self.cursor_pos
-        dist = np.linalg.norm(vec) + 1e-7
+        dist = np.linalg.norm(vec) + _EPS
         unit = vec / dist
         noise = self.rng.normal(0, self.cfg.cursor_noise_std, size=2).astype(np.float32)
         direction = unit + noise
-        norm = np.linalg.norm(direction) + 1e-7
+        norm = np.linalg.norm(direction) + _EPS
         direction /= norm
         self.cursor_pos += direction * self.cfg.cursor_speed
+        self._clip_cursor_pos()
+
+    def _clip_cursor_pos(self):
         self.cursor_pos[0] = float(np.clip(self.cursor_pos[0], 0, self.cfg.width))
         self.cursor_pos[1] = float(np.clip(self.cursor_pos[1], 0, self.cfg.height))
 

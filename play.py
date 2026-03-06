@@ -1,6 +1,5 @@
 import argparse
 import random
-import time
 from collections import deque
 
 import cv2
@@ -11,34 +10,57 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from env import CursorAvoidEnv, GameConfig
+from env import (
+    ACTION_DOWN,
+    ACTION_LEFT,
+    ACTION_RIGHT,
+    ACTION_STAY,
+    ACTION_UP,
+    CursorAvoidEnv,
+    GameConfig,
+)
 
 HAND_WINDOW_NAME = "Right Index Tracker"
+RIGHT_INDEX_LANDMARK = 8
 
 
-def run_human_mode():
-    env = CursorAvoidEnv(
+def _build_default_env(*, use_external_cursor: bool) -> CursorAvoidEnv:
+    return CursorAvoidEnv(
         config=GameConfig(max_steps=None, max_life=1),
         render_mode="human",
         use_mouse_cursor=False,
+        use_external_cursor=use_external_cursor,
     )
+
+
+def _window_close_requested() -> bool:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return True
+    return False
+
+
+def _human_action_from_keyboard() -> int:
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_w] or keys[pygame.K_UP]:
+        return ACTION_UP
+    if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+        return ACTION_DOWN
+    if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+        return ACTION_LEFT
+    if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+        return ACTION_RIGHT
+    return ACTION_STAY
+
+
+def run_human_mode():
+    env = _build_default_env(use_external_cursor=False)
     obs, _ = env.reset()
     done = False
     while not done:
-        action = 0
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_w] or keys[pygame.K_UP]:
-            action = 1
-        elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
-            action = 2
-        elif keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            action = 3
-        elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            action = 4
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                done = True
+        action = _human_action_from_keyboard()
+        if _window_close_requested():
+            done = True
 
         obs, reward, terminated, truncated, info = env.step(action)
         done = done or terminated or truncated
@@ -94,6 +116,7 @@ class OnlineDQNAgent:
         self.buffer = deque(maxlen=buffer_size)
         self.steps = 0
         self.rng = random.Random(42)
+        self.learn_ready_size = max(self.min_buffer, self.batch_size)
 
     def act(self, obs):
         self.steps += 1
@@ -108,18 +131,21 @@ class OnlineDQNAgent:
         self.buffer.append((obs.copy(), action, reward, next_obs.copy(), done))
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
+    def _sample_batch_tensors(self):
+        batch = self.rng.sample(self.buffer, self.batch_size)
+        obs, actions, rewards, next_obs, dones = zip(*batch)
+        obs_t = torch.tensor(np.array(obs), dtype=torch.float32, device=self.device)
+        actions_t = torch.tensor(actions, dtype=torch.int64, device=self.device).unsqueeze(1)
+        rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
+        next_obs_t = torch.tensor(np.array(next_obs), dtype=torch.float32, device=self.device)
+        dones_t = torch.tensor(dones, dtype=torch.float32, device=self.device).unsqueeze(1)
+        return obs_t, actions_t, rewards_t, next_obs_t, dones_t
+
     def learn(self):
-        if len(self.buffer) < self.min_buffer:
+        if len(self.buffer) < self.learn_ready_size:
             return
         for _ in range(self.updates_per_step):
-            batch = self.rng.sample(self.buffer, self.batch_size)
-            obs = torch.tensor(np.array([b[0] for b in batch]), dtype=torch.float32, device=self.device)
-            actions = torch.tensor([b[1] for b in batch], dtype=torch.int64, device=self.device).unsqueeze(1)
-            rewards = torch.tensor([b[2] for b in batch], dtype=torch.float32, device=self.device).unsqueeze(1)
-            next_obs = torch.tensor(
-                np.array([b[3] for b in batch]), dtype=torch.float32, device=self.device
-            )
-            dones = torch.tensor([b[4] for b in batch], dtype=torch.float32, device=self.device).unsqueeze(1)
+            obs, actions, rewards, next_obs, dones = self._sample_batch_tensors()
 
             q = self.online_net(obs).gather(1, actions)
             with torch.no_grad():
@@ -203,7 +229,7 @@ class RightIndexTracker:
                 lm,
                 self._mp_hands.HAND_CONNECTIONS,
             )
-            tip = lm.landmark[8]
+            tip = lm.landmark[RIGHT_INDEX_LANDMARK]
             right_tip = (float(tip.x), float(tip.y), float(tip.z))
 
         if self.show_preview:
@@ -247,12 +273,7 @@ def run_online_rl_mode(
     mirror_camera: bool = True,
     show_hand_preview: bool = True,
 ):
-    env = CursorAvoidEnv(
-        config=GameConfig(max_steps=None, max_life=1),
-        render_mode="human",
-        use_mouse_cursor=False,
-        use_external_cursor=True,
-    )
+    env = _build_default_env(use_external_cursor=True)
     tracker = RightIndexTracker(
         camera=camera,
         width=cam_width,
@@ -268,9 +289,8 @@ def run_online_rl_mode(
 
     try:
         while not done:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    done = True
+            if _window_close_requested():
+                done = True
 
             if done:
                 break
